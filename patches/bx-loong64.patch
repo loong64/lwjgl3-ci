@@ -1,0 +1,113 @@
+diff --git a/scripts/toolchain.lua b/scripts/toolchain.lua
+--- a/scripts/toolchain.lua
++++ b/scripts/toolchain.lua
+@@ -80,6 +80,7 @@
+ 			{ "linux-ppc64le-gcc",  "Linux (PPC64LE, GCC compiler)"  },
+ 			{ "linux-ppc64le-clang",  "Linux (PPC64LE, Clang compiler)"  },
+ 			{ "linux-riscv64-gcc",  "Linux (RISC-V 64, GCC compiler)"  },
++			{ "linux-loong64-gcc",  "Linux (LoongArch 64, GCC compiler)"  },
+ 			{ "ios-arm64",       "iOS - ARM64"                },
+ 			{ "ios-simulator",   "iOS - Simulator"            },
+ 			{ "tvos-arm64",      "tvOS - ARM64"               },
+@@ -346,6 +347,9 @@
+ 		elseif "linux-riscv64-gcc" == _OPTIONS["gcc"] then
+ 			location (path.join(_buildDir, "projects", _ACTION .. "-linux-riscv64-gcc"))
+ 
++		elseif "linux-loong64-gcc" == _OPTIONS["gcc"] then
++			location (path.join(_buildDir, "projects", _ACTION .. "-linux-loong64-gcc"))
++
+ 		elseif "mingw-gcc" == _OPTIONS["gcc"] then
+ 			if not os.getenv("MINGW") then
+ 				print("Set MINGW environment variable.")
+@@ -934,6 +938,21 @@
+ 			"-Wl,--gc-sections",
+ 		}
+ 
++	configuration { "linux-loong64*" }
++		buildoptions {
++			"-Wunused-value",
++			"-Wundef",
++			"-march=loongarch64",
++			"-mabi=lp64d",
++		}
++		links {
++			"rt",
++			"dl",
++		}
++		linkoptions {
++			"-Wl,--gc-sections",
++		}
++
+ 	configuration { "linux-ppc64le-gcc" }
+ 		targetdir (path.join(_buildDir, "linux_ppc64le_gcc/bin"))
+ 		objdir (path.join(_buildDir, "linux_ppc64le_gcc/obj"))
+@@ -948,6 +967,11 @@
+ 		targetdir (path.join(_buildDir, "linux_riscv64_gcc/bin"))
+ 		objdir (path.join(_buildDir, "linux_riscv64_gcc/obj"))
+ 		libdirs { path.join(_libDir, "lib/linux_riscv64_gcc") }
++
++	configuration { "linux-loong64-gcc" }
++		targetdir (path.join(_buildDir, "linux_loong64_gcc/bin"))
++		objdir (path.join(_buildDir, "linux_loong64_gcc/obj"))
++		libdirs { path.join(_libDir, "lib/linux_loong64_gcc") }
+ 
+ 	configuration { "wasm2js" }
+ 		targetdir (path.join(_buildDir, "wasm2js/bin"))
+diff --git a/src/debug.cpp b/src/debug.cpp
+--- a/src/debug.cpp
++++ b/src/debug.cpp
+@@ -435,7 +435,10 @@
+ 
+ 	BX_NO_INLINE uint32_t getCallStackGccBuiltin(uint32_t _skip, uint32_t _max, uintptr_t* _outStack)
+ 	{
+-#if BX_COMPILER_GCC || BX_COMPILER_CLANG
++#if BX_CPU_LOONGARCH64
++		// LoongArch only supports __builtin_return_address for the current frame.
++		return getCallStackUnwind(_skip + 1 /* skip self */, _max, _outStack);
++#elif BX_COMPILER_GCC || BX_COMPILER_CLANG
+ 		BX_PRAGMA_DIAGNOSTIC_PUSH();
+ 		BX_PRAGMA_DIAGNOSTIC_IGNORED_CLANG_GCC("-Wframe-address");
+ 
+@@ -599,7 +602,10 @@
+ 
+ 	BX_NO_INLINE uint32_t getCallStackFast(uint32_t _skip, uint32_t _max, uintptr_t* _outStack)
+ 	{
+-#if BX_PLATFORM_LINUX || BX_PLATFORM_OSX
++#if BX_PLATFORM_LINUX && BX_CPU_LOONGARCH64
++		// Use the unwinder instead of assuming an x86-style frame layout.
++		return getCallStackUnwind(_skip + 1 /* skip self */, _max, _outStack);
++#elif BX_PLATFORM_LINUX || BX_PLATFORM_OSX
+ 		return getCallStackSystemVAbi(_skip + 1 /* skip self */, _max, _outStack);
+ #elif BX_PLATFORM_WINDOWS
+ 		return getCallStackWinAbi(_skip + 1 /* skip self */, _max, _outStack);
+diff --git a/include/bx/platform.h b/include/bx/platform.h
+--- a/include/bx/platform.h
++++ b/include/bx/platform.h
+@@ -25,6 +25,7 @@
+ #define BX_CPU_JIT   0
+ #define BX_CPU_MIPS  0
+ #define BX_CPU_PPC   0
++#define BX_CPU_LOONGARCH64 0
+ #define BX_CPU_RISCV 0
+ #define BX_CPU_X86   0
+ 
+@@ -107,6 +108,10 @@
+  ||   defined(RISCVEL)
+ #	undef  BX_CPU_RISCV
+ #	define BX_CPU_RISCV 1
++#	define BX_CACHE_LINE_SIZE 64
++#elif defined(__loongarch__) || defined(__loongarch64)
++#	undef  BX_CPU_LOONGARCH64
++#	define BX_CPU_LOONGARCH64 1
+ #	define BX_CACHE_LINE_SIZE 64
+ #elif defined(_M_IX86)    \
+  ||   defined(_M_X64)     \
+@@ -400,6 +405,8 @@
+ #	define BX_CPU_NAME "MIPS"
+ #elif BX_CPU_PPC
+ #	define BX_CPU_NAME "PowerPC"
++#elif BX_CPU_LOONGARCH64
++#	define BX_CPU_NAME "LoongArch64"
+ #elif BX_CPU_RISCV
+ #	define BX_CPU_NAME "RISC-V"
+ #elif BX_CPU_X86

@@ -1,0 +1,213 @@
+name: glfw Linux Build
+'on':
+  workflow_call:
+    inputs:
+      channel:
+        type: string
+        required: true
+      version:
+        type: string
+        required: false
+        default: ''
+      output_prefix:
+        type: string
+        required: true
+permissions:
+  contents: read
+env:
+  GLFW_PARAMS: -DGLFW_LIBRARY_TYPE=SHARED -DGLFW_BUILD_EXAMPLES=OFF -DGLFW_BUILD_TESTS=OFF -DGLFW_BUILD_DOCS=OFF -DCMAKE_BUILD_TYPE=Release
+jobs:
+  linux:
+    name: Linux
+    runs-on: ${{ matrix.RUNNER }}
+    container: debian:trixie
+    strategy:
+      fail-fast: false
+      matrix:
+        ARCH: [amd64, arm64]
+        include:
+        - ARCH: amd64
+          RUNNER: ubuntu-24.04
+          GCC: 14
+        - ARCH: arm64
+          RUNNER: ubuntu-24.04-arm
+          GCC: 14
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install dependencies
+        run: |
+          rm -f /etc/apt/apt.conf.d/docker-clean
+          DEBIAN_FRONTEND=noninteractive apt-get -yq update
+          DEBIAN_FRONTEND=noninteractive apt-get -yq install --no-install-recommends ca-certificates git tar zstd
+      - uses: actions/checkout@v7
+        with:
+          repository: LWJGL-CI/glfw
+          fetch-depth: 5
+      - uses: actions/cache@v5
+        with:
+          path: /var/cache/apt
+          key: apt-trixie-v1-glfw-${{ github.job }}-${{ runner.arch }}-${{ matrix.ARCH }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            apt-trixie-v1-glfw-${{ github.job }}-${{ runner.arch }}-${{ matrix.ARCH }}-
+      - name: Install build dependencies
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get -yq install cmake pkg-config \
+            gcc-${{ matrix.GCC }} \
+            libc6-dev
+      - name: Install dependencies
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get -yq install \
+            libxrandr-dev \
+            libxinerama-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libxext-dev \
+            libxkbcommon-dev \
+            libwayland-dev
+      - name: Configure build
+        run: |
+          CC=gcc-${{ matrix.GCC }} cmake -B build \
+            -DGLFW_BUILD_WAYLAND=ON \
+            -DCMAKE_C_FLAGS:STRING="${CMAKE_C_FLAGS} -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0" \
+            $GLFW_PARAMS
+      - name: Build
+        run: |
+          cmake --build build --parallel
+          strip build/src/libglfw.so
+      - name: Stage library files
+        run: |
+          output="dist/${{ inputs.output_prefix }}/linux/${{ matrix.ARCH == 'amd64' && 'x64' || matrix.ARCH }}"
+          mkdir -p "$output"
+          cp -p "build/src/libglfw.so" "$output/libglfw.so"
+          git config --global --add safe.directory $(pwd)
+          git log --first-parent --pretty=format:%H --skip 4 -n 1 > "$output/libglfw.so.git"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-glfw-linux-${{ matrix.ARCH }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  linux-cross:
+    name: Linux Cross
+    runs-on: ubuntu-24.04
+    container: debian:trixie
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - ARCH: ppc64le
+          CROSS_ARCH: ppc64el
+          TRIPLET: powerpc64le-linux-gnu
+          GCC: 14
+          PROCESSOR: powerpc64le
+          HOST: powerpc64le-linux-gnu
+        - ARCH: riscv64
+          CROSS_ARCH: riscv64
+          TRIPLET: riscv64-linux-gnu
+          GCC: 14
+          PROCESSOR: riscv64
+          HOST: riscv64-linux-gnu
+        - ARCH: loong64
+          CROSS_ARCH: loong64
+          TRIPLET: loongarch64-linux-gnu
+          GCC: 14
+          PROCESSOR: loongarch64
+          HOST: loongarch64-linux-gnu
+        - ARCH: s390x
+          CROSS_ARCH: s390x
+          TRIPLET: s390x-linux-gnu
+          GCC: 14
+          PROCESSOR: s390x
+          HOST: s390x-linux-gnu
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install dependencies
+        run: |
+          rm -f /etc/apt/apt.conf.d/docker-clean
+          DEBIAN_FRONTEND=noninteractive apt-get -yq update
+          DEBIAN_FRONTEND=noninteractive apt-get -yq install --no-install-recommends ca-certificates git tar zstd
+      - uses: actions/checkout@v7
+        with:
+          repository: LWJGL-CI/glfw
+          fetch-depth: 5
+      - uses: actions/cache@v5
+        with:
+          path: /var/cache/apt
+          key: apt-trixie-v1-glfw-${{ github.job }}-${{ runner.arch }}-${{ matrix.ARCH }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            apt-trixie-v1-glfw-${{ github.job }}-${{ runner.arch }}-${{ matrix.ARCH }}-
+      - name: Install build dependencies
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get -yq install cmake pkg-config \
+            gcc-${{ matrix.GCC }}-${{ matrix.TRIPLET }} \
+            libc6-dev-${{ matrix.CROSS_ARCH }}-cross
+      - name: Prepare Debian Repository for loong64
+        if: matrix.ARCH == 'loong64'
+        run: |
+          # Official trixie does not carry loong64. Do not request its index there,
+          # or install native amd64 packages from the supplemental mirror.
+          native=$(dpkg --print-architecture)
+          sed -i "/^Types: deb/a Architectures: $native" /etc/apt/sources.list.d/debian.sources
+          cat > /etc/apt/sources.list.d/trixie-loong64.sources << "EOF"
+          Types: deb
+          URIs: http://mirrors.loong64.com/debian
+          Suites: trixie trixie-updates
+          Components: main
+          Architectures: loong64
+          # Signed-By: /usr/share/keyrings/debian-loong64-non-official-archive-keyring.pgp
+
+          Types: deb
+          URIs: http://mirrors.loong64.com/debian-security
+          Suites: trixie-security
+          Components: main
+          Architectures: loong64
+          # Signed-By: /usr/share/keyrings/debian-loong64-non-official-archive-keyring.pgp
+          EOF
+          dpkg --add-architecture loong64
+          apt-get update -o Acquire::AllowInsecureRepositories=true
+          apt-get install -y --allow-unauthenticated curl debian-loong64-non-official-archive-keyring
+          sed -i 's/# Signed-By/Signed-By/g' /etc/apt/sources.list.d/trixie-loong64.sources
+          apt-get update
+      - name: Prepare cross-compilation for ${{ matrix.CROSS_ARCH }}
+        run: |
+          dpkg --add-architecture ${{ matrix.CROSS_ARCH }}
+          apt-get update
+      - name: Install dependencies
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get -yq install \
+            libxrandr-dev:${{ matrix.CROSS_ARCH }} \
+            libxinerama-dev:${{ matrix.CROSS_ARCH }} \
+            libxcursor-dev:${{ matrix.CROSS_ARCH }} \
+            libxi-dev:${{ matrix.CROSS_ARCH }} \
+            libxext-dev:${{ matrix.CROSS_ARCH }} \
+            libxkbcommon-dev:${{ matrix.CROSS_ARCH }} \
+            libwayland-dev:${{ matrix.CROSS_ARCH }}
+      - name: Configure build
+        run: |
+          export PKG_CONFIG_LIBDIR="/usr/lib/${{ matrix.TRIPLET }}/pkgconfig:/usr/share/pkgconfig"
+          CC=${{ matrix.TRIPLET }}-gcc-${{ matrix.GCC }} cmake -B build \
+            -DGLFW_BUILD_WAYLAND=ON \
+            -DCMAKE_C_FLAGS:STRING="${CMAKE_C_FLAGS} -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0" \
+            $GLFW_PARAMS
+      - name: Build
+        run: |
+          cmake --build build --parallel
+          ${{ matrix.TRIPLET }}-strip build/src/libglfw.so
+      - name: Stage library files
+        run: |
+          output="dist/${{ inputs.output_prefix }}/linux/${{ matrix.ARCH }}"
+          mkdir -p "$output"
+          cp -p "build/src/libglfw.so" "$output/libglfw.so"
+          git config --global --add safe.directory $(pwd)
+          git log --first-parent --pretty=format:%H --skip 4 -n 1 > "$output/libglfw.so.git"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-glfw-linux-cross-${{ matrix.ARCH }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7

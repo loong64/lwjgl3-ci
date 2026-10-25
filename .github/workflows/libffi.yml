@@ -1,0 +1,174 @@
+name: libffi Linux Build
+'on':
+  workflow_call:
+    inputs:
+      channel:
+        type: string
+        required: true
+      version:
+        type: string
+        required: false
+        default: ''
+      output_prefix:
+        type: string
+        required: true
+      libffi_version:
+        type: string
+        required: true
+permissions:
+  contents: read
+jobs:
+  linux:
+    name: Linux
+    runs-on: ${{ matrix.RUNNER }}
+    container: debian:trixie
+    strategy:
+      fail-fast: false
+      matrix:
+        ARCH: [amd64, arm64]
+        include:
+        - ARCH: amd64
+          HOST: x86_64-pc-linux-gnu
+          RUNNER: ubuntu-24.04
+          GCC: 14
+        - ARCH: arm64
+          RUNNER: ubuntu-24.04-arm
+          HOST: aarch64-linux-gnu
+          GCC: 14
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install dependencies
+        run: |
+          rm -f /etc/apt/apt.conf.d/docker-clean
+          DEBIAN_FRONTEND=noninteractive apt-get -yq update
+          DEBIAN_FRONTEND=noninteractive apt-get -yq install --no-install-recommends ca-certificates git tar zstd
+      - uses: actions/cache@v5
+        with:
+          path: /var/cache/apt
+          key: apt-trixie-v1-libffi-${{ github.job }}-${{ runner.arch }}-${{ matrix.ARCH }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            apt-trixie-v1-libffi-${{ github.job }}-${{ runner.arch }}-${{ matrix.ARCH }}-
+      - name: Install build dependencies
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get -yq install autoconf curl  make \
+            gcc-${{ matrix.GCC }} \
+            libc6-dev
+      - name: Build libffi release selected by lwjgl3
+        run: |
+          set -euo pipefail
+          # libffi is the only static third-party library linked by LWJGL core.
+          ffi_version="${{ inputs.libffi_version }}"
+          [[ "$ffi_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+              echo "Invalid libffi version from selected lwjgl.zip" >&2
+              exit 1
+          }
+          ROOT=$(mktemp -d "$RUNNER_TEMP/libffi-${{ matrix.ARCH }}.XXXXXX")
+          curl -fL --retry 3 \
+              "https://github.com/libffi/libffi/releases/download/v${ffi_version}/libffi-${ffi_version}.tar.gz" \
+              | tar -xz -C "$ROOT"
+          (
+              cd "$ROOT/libffi-$ffi_version"
+              ./configure --disable-builddir --host="${{ matrix.HOST }}" --disable-shared --enable-static --with-pic --disable-docs \
+                  CC="gcc-${{ matrix.GCC }}" CFLAGS="-O2"
+              make -j"$(nproc)"
+          )
+          ffi_archive_built=$(find "$ROOT/libffi-$ffi_version" -path '*/.libs/libffi.a' -print -quit)
+          [[ -n "$ffi_archive_built" ]] || {
+              echo "libffi.a was not built for ${{ matrix.ARCH }}" >&2
+              exit 1
+          }
+          install -D -m 0644 "$ffi_archive_built" \
+              "$GITHUB_WORKSPACE/dist/${{ inputs.output_prefix }}/linux/${{ matrix.ARCH == 'amd64' && 'x64' || matrix.ARCH }}/core/libffi.a"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-libffi-linux-${{ matrix.ARCH }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  linux-cross:
+    name: Linux Cross
+    runs-on: ubuntu-24.04
+    container: debian:trixie
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - ARCH: ppc64le
+          CROSS_ARCH: ppc64el
+          TRIPLET: powerpc64le-linux-gnu
+          GCC: 14
+          HOST: powerpc64le-linux-gnu
+          PROCESSOR: powerpc64le
+        - ARCH: riscv64
+          CROSS_ARCH: riscv64
+          TRIPLET: riscv64-linux-gnu
+          GCC: 14
+          HOST: riscv64-linux-gnu
+          PROCESSOR: riscv64
+        - ARCH: loong64
+          CROSS_ARCH: loong64
+          TRIPLET: loongarch64-linux-gnu
+          GCC: 14
+          HOST: loongarch64-linux-gnu
+          PROCESSOR: loongarch64
+        - ARCH: s390x
+          CROSS_ARCH: s390x
+          TRIPLET: s390x-linux-gnu
+          GCC: 14
+          HOST: s390x-linux-gnu
+          PROCESSOR: s390x
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install dependencies
+        run: |
+          rm -f /etc/apt/apt.conf.d/docker-clean
+          DEBIAN_FRONTEND=noninteractive apt-get -yq update
+          DEBIAN_FRONTEND=noninteractive apt-get -yq install --no-install-recommends ca-certificates git tar zstd
+      - uses: actions/cache@v5
+        with:
+          path: /var/cache/apt
+          key: apt-trixie-v1-libffi-${{ github.job }}-${{ runner.arch }}-${{ matrix.ARCH }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            apt-trixie-v1-libffi-${{ github.job }}-${{ runner.arch }}-${{ matrix.ARCH }}-
+      - name: Install build dependencies
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get -yq install autoconf curl  make \
+            gcc-${{ matrix.GCC }}-${{ matrix.TRIPLET }} \
+            libc6-dev-${{ matrix.CROSS_ARCH }}-cross
+      - name: Build libffi release selected by lwjgl3
+        run: |
+          set -euo pipefail
+          # libffi is the only static third-party library linked by LWJGL core.
+          ffi_version="${{ inputs.libffi_version }}"
+          [[ "$ffi_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+              echo "Invalid libffi version from selected lwjgl.zip" >&2
+              exit 1
+          }
+          ROOT=$(mktemp -d "$RUNNER_TEMP/libffi-${{ matrix.ARCH }}.XXXXXX")
+          curl -fL --retry 3 \
+              "https://github.com/libffi/libffi/releases/download/v${ffi_version}/libffi-${ffi_version}.tar.gz" \
+              | tar -xz -C "$ROOT"
+          (
+              cd "$ROOT/libffi-$ffi_version"
+              ./configure --disable-builddir --host="${{ matrix.HOST }}" --disable-shared --enable-static --with-pic --disable-docs \
+                  CC="${{ matrix.TRIPLET }}-gcc-${{ matrix.GCC }}" CFLAGS="-O2"
+              make -j"$(nproc)"
+          )
+          ffi_archive_built=$(find "$ROOT/libffi-$ffi_version" -path '*/.libs/libffi.a' -print -quit)
+          [[ -n "$ffi_archive_built" ]] || {
+              echo "libffi.a was not built for ${{ matrix.ARCH }}" >&2
+              exit 1
+          }
+          install -D -m 0644 "$ffi_archive_built" \
+              "$GITHUB_WORKSPACE/dist/${{ inputs.output_prefix }}/linux/${{ matrix.ARCH }}/core/libffi.a"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-libffi-linux-cross-${{ matrix.ARCH }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7

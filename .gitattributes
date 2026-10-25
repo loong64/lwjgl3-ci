@@ -1,0 +1,4 @@
+* text=auto eol=lf
+*.so binary
+*.a binary
+*.patch whitespace=-blank-at-eol,-space-before-tab

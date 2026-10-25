@@ -1,0 +1,332 @@
+name: Build LWJGL native dependencies
+'on':
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: LWJGL distribution channel
+        type: choice
+        options:
+        - stable
+        - release
+        default: stable
+        required: true
+      version:
+        description: 'Required for release: e.g. 3.4.3; matching latest/stable aliases update automatically'
+        type: string
+        required: false
+        default: ''
+permissions:
+  contents: read
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    outputs:
+      lwjgl_commit: ${{ steps.snapshot.outputs.lwjgl_commit }}
+      output_prefix: ${{ steps.snapshot.outputs.output_prefix }}
+      libffi_version: ${{ steps.snapshot.outputs.libffi_version }}
+      release_version: ${{ steps.snapshot.outputs.release_version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Resolve versions from selected distribution
+        id: snapshot
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          case "$CHANNEL" in
+            stable) snapshot=stable; archive=lwjgl.zip ;;
+            release)
+              [[ "$VERSION" =~ ^(latest|[0-9]+\.[0-9]+\.[0-9]+[a-z]?)$ ]]
+              snapshot="release/$VERSION"
+              archive=lwjgl.zip
+              [[ "$VERSION" == latest ]] || archive="lwjgl-$VERSION.zip"
+              ;;
+            *) exit 1 ;;
+          esac
+          base="https://build.lwjgl.org/$snapshot"
+          curl -fL --retry 3 "$base/$archive" -o "$RUNNER_TEMP/lwjgl.zip"
+          commit=$(curl -fsSL --retry 3 "$base/linux/x64/liblwjgl.so.git")
+          [[ "$commit" =~ ^[a-fA-F0-9]{40}$ ]]
+          mapfile -t sources < <(unzip -Z1 "$RUNNER_TEMP/lwjgl.zip" | grep -E '(^|/)lwjgl(-[0-9]+\.[0-9]+\.[0-9]+[a-z]?)?-sources\.jar$')
+          [[ ${#sources[@]} == 1 ]]
+          unzip -p "$RUNNER_TEMP/lwjgl.zip" "${sources[0]}" > "$RUNNER_TEMP/lwjgl-sources.jar"
+          ffi_version=$(unzip -p "$RUNNER_TEMP/lwjgl-sources.jar" org/lwjgl/system/libffi/LibFFI.java |
+            sed -nE 's/.*(FFI_)?VERSION_STRING[[:space:]]*=[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*/\2/p' | sort -u)
+          [[ "$ffi_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          release_version=
+          if [[ "$CHANNEL" == release && "$VERSION" != latest ]]; then
+            release_version=$VERSION
+          else
+            release_version=$(unzip -p "$RUNNER_TEMP/lwjgl-sources.jar" org/lwjgl/Version.java |
+              sed -nE 's/.*VERSION_(MAJOR|MINOR|REVISION)[[:space:]]*=[[:space:]]*([0-9]+).*/\2/p' | paste -sd.)
+            [[ "$release_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          fi
+          {
+            echo "output_prefix=$snapshot"
+            echo "lwjgl_commit=${commit,,}"
+            echo "libffi_version=$ffi_version"
+            echo "release_version=$release_version"
+          } >> "$GITHUB_OUTPUT"
+          printf '## %s\n\nLWJGL commit: `%s`\n\nlibffi: %s\n' "$snapshot" "$commit" "$ffi_version" >> "$GITHUB_STEP_SUMMARY"
+  build-assimp:
+    needs: resolve
+    uses: ./.github/workflows/assimp.yml
+    with:
+      channel: ${{ inputs.channel }}
+      version: ${{ inputs.version }}
+      output_prefix: ${{ needs.resolve.outputs.output_prefix }}
+  build-bgfx:
+    needs: resolve
+    uses: ./.github/workflows/bgfx.yml
+    with:
+      channel: ${{ inputs.channel }}
+      version: ${{ inputs.version }}
+      output_prefix: ${{ needs.resolve.outputs.output_prefix }}
+  build-freetype:
+    needs: resolve
+    uses: ./.github/workflows/freetype.yml
+    with:
+      channel: ${{ inputs.channel }}
+      version: ${{ inputs.version }}
+      output_prefix: ${{ needs.resolve.outputs.output_prefix }}
+  build-glfw:
+    needs: resolve
+    uses: ./.github/workflows/glfw.yml
+    with:
+      channel: ${{ inputs.channel }}
+      version: ${{ inputs.version }}
+      output_prefix: ${{ needs.resolve.outputs.output_prefix }}
+  build-harfbuzz:
+    needs: resolve
+    uses: ./.github/workflows/harfbuzz.yml
+    with:
+      channel: ${{ inputs.channel }}
+      version: ${{ inputs.version }}
+      output_prefix: ${{ needs.resolve.outputs.output_prefix }}
+  build-hwloc:
+    needs: resolve
+    uses: ./.github/workflows/hwloc.yml
+    with:
+      channel: ${{ inputs.channel }}
+      version: ${{ inputs.version }}
+      output_prefix: ${{ needs.resolve.outputs.output_prefix }}
+  build-jemalloc:
+    needs: resolve
+    uses: ./.github/workflows/jemalloc.yml
+    with:
+      channel: ${{ inputs.channel }}
+      version: ${{ inputs.version }}
+      output_prefix: ${{ needs.resolve.outputs.output_prefix }}
+  build-ktx-software:
+    needs: resolve
+    uses: ./.github/workflows/KTX-Software.yml
+    with:
+      channel: ${{ inputs.channel }}
+      version: ${{ inputs.version }}
+      output_prefix: ${{ needs.resolve.outputs.output_prefix }}
+  build-libffi:
+    needs: resolve
+    uses: ./.github/workflows/libffi.yml
+    with:
+      channel: ${{ inputs.channel }}
+      version: ${{ inputs.version }}
+      output_prefix: ${{ needs.resolve.outputs.output_prefix }}
+      libffi_version: ${{ needs.resolve.outputs.libffi_version }}
+  build-mimalloc:
+    needs: resolve
+    uses: ./.github/workflows/mimalloc.yml
+    with:
+      channel: ${{ inputs.channel }}
+      version: ${{ inputs.version }}
+      output_prefix: ${{ needs.resolve.outputs.output_prefix }}
+  build-openal-soft:
+    needs: resolve
+    uses: ./.github/workflows/openal-soft.yml
+    with:
+      channel: ${{ inputs.channel }}
+      version: ${{ inputs.version }}
+      output_prefix: ${{ needs.resolve.outputs.output_prefix }}
+  build-openxr-sdk:
+    needs: resolve
+    uses: ./.github/workflows/OpenXR-SDK.yml
+    with:
+      channel: ${{ inputs.channel }}
+      version: ${{ inputs.version }}
+      output_prefix: ${{ needs.resolve.outputs.output_prefix }}
+  build-opus:
+    needs: resolve
+    uses: ./.github/workflows/opus.yml
+    with:
+      channel: ${{ inputs.channel }}
+      version: ${{ inputs.version }}
+      output_prefix: ${{ needs.resolve.outputs.output_prefix }}
+  build-sdl:
+    needs: resolve
+    uses: ./.github/workflows/SDL.yml
+    with:
+      channel: ${{ inputs.channel }}
+      version: ${{ inputs.version }}
+      output_prefix: ${{ needs.resolve.outputs.output_prefix }}
+  build-shaderc:
+    needs: resolve
+    uses: ./.github/workflows/shaderc.yml
+    with:
+      channel: ${{ inputs.channel }}
+      version: ${{ inputs.version }}
+      output_prefix: ${{ needs.resolve.outputs.output_prefix }}
+  build-spirv-cross:
+    needs: resolve
+    uses: ./.github/workflows/SPIRV-Cross.yml
+    with:
+      channel: ${{ inputs.channel }}
+      version: ${{ inputs.version }}
+      output_prefix: ${{ needs.resolve.outputs.output_prefix }}
+  build-openvr:
+    needs: resolve
+    uses: ./.github/workflows/OpenVR.yml
+    with:
+      channel: ${{ inputs.channel }}
+      version: ${{ inputs.version }}
+      output_prefix: ${{ needs.resolve.outputs.output_prefix }}
+  publish:
+    name: Publish complete snapshot
+    needs:
+    - resolve
+    - build-assimp
+    - build-bgfx
+    - build-freetype
+    - build-glfw
+    - build-harfbuzz
+    - build-hwloc
+    - build-jemalloc
+    - build-ktx-software
+    - build-libffi
+    - build-mimalloc
+    - build-openal-soft
+    - build-openxr-sdk
+    - build-opus
+    - build-sdl
+    - build-shaderc
+    - build-spirv-cross
+    - build-openvr
+    if: ${{ always() && needs.resolve.result == 'success' && !contains(needs.*.result, 'failure') && !contains(needs.*.result,
+      'cancelled') }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: native-*
+          path: dist
+          merge-multiple: true
+      - name: Verify libraries and publish matching snapshots
+        env:
+          SNAPSHOT: ${{ needs.resolve.outputs.output_prefix }}
+          LWJGL_COMMIT: ${{ needs.resolve.outputs.lwjgl_commit }}
+          RELEASE_VERSION: ${{ needs.resolve.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          [[ "$SNAPSHOT" =~ ^(stable|release/(latest|[0-9]+\.[0-9]+\.[0-9]+[a-z]?))$ ]]
+          [[ "$LWJGL_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+[a-z]?$ ]]
+          source_dir="$GITHUB_WORKSPACE/dist/$SNAPSHOT/linux"
+          [[ -d "$source_dir" ]]
+          [[ -z "$(find dist -type l -print -quit)" ]]
+          mapfile -t files < <(find dist -type f)
+          [[ ${#files[@]} -gt 0 ]]
+          for file in "${files[@]}"; do
+            [[ "$file" == "dist/$SNAPSHOT/linux/"* ]]
+            [[ "$file" != */.git/* ]]
+            if [[ "$file" == *.git ]]; then
+              [[ "$(cat "$file")" =~ ^[a-fA-F0-9]{40}$ ]]
+              continue
+            fi
+            arch=${file#dist/$SNAPSHOT/linux/}
+            arch=${arch%%/*}
+            case "$arch" in
+              x64) machine='Advanced Micro Devices X86-64'; endian='little endian' ;;
+              arm64) machine=AArch64; endian='little endian' ;;
+              ppc64le) machine=PowerPC64; endian='little endian' ;;
+              riscv64) machine=RISC-V; endian='little endian' ;;
+              loong64) machine=LoongArch; endian='little endian' ;;
+              s390x) machine='IBM S/390'; endian='big endian' ;;
+              *) echo "Unexpected architecture: $arch" >&2; exit 1 ;;
+            esac
+            headers=$(readelf -h "$file")
+            [[ -n "$headers" ]]
+            awk -v machine="$machine" -v endian="$endian" '
+              /Class:/ { classes++; if ($2 != "ELF64") exit 1 }
+              /Data:/ { data++; if (index($0, endian) == 0) exit 1 }
+              /Machine:/ { machines++; sub(/^.*Machine:[[:space:]]*/, ""); if ($0 != machine) exit 1 }
+              END { if (!classes || classes != data || classes != machines) exit 1 }
+            ' <<< "$headers"
+          done
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          target="$RUNNER_TEMP/lwjgl-publish"
+          cleanup() { git worktree remove --force "$target" 2>/dev/null || true; }
+          trap cleanup EXIT
+          for attempt in {1..10}; do
+            # Builds can take hours; recheck aliases before every publication attempt.
+            destinations=()
+            for candidate in "$SNAPSHOT" "release/$RELEASE_VERSION" release/latest stable; do
+              [[ " ${destinations[*]} " != *" $candidate "* ]] || continue
+              status=$(curl -sSL --retry 3 -o "$RUNNER_TEMP/lwjgl-commit" -w '%{http_code}' \
+                "https://build.lwjgl.org/$candidate/linux/x64/liblwjgl.so.git")
+              case "$status" in
+                200) ;;
+                403|404) continue ;;
+                *) echo "Cannot recheck $candidate: HTTP $status" >&2; exit 1 ;;
+              esac
+              commit=$(cat "$RUNNER_TEMP/lwjgl-commit")
+              [[ "$commit" =~ ^[a-fA-F0-9]{40}$ ]]
+              [[ "${commit,,}" != "$LWJGL_COMMIT" ]] || destinations+=("$candidate")
+            done
+            if [[ ${#destinations[@]} == 0 ]]; then
+              echo 'Official snapshot pointers moved; no matching destination remains' >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            expected_head=
+            has_history=false
+            if git ls-remote --exit-code --heads origin maven > "$RUNNER_TEMP/lwjgl-remote"; then
+              git fetch --depth=1 --no-tags origin refs/heads/maven
+              expected_head=$(git rev-parse FETCH_HEAD)
+              if git cat-file -p "$expected_head" | grep -q '^parent '; then
+                has_history=true
+              fi
+              git worktree add --detach "$target" "$expected_head"
+            else
+              status=$?
+              [[ "$status" == 2 ]]
+              git worktree add --detach --no-checkout "$target" HEAD
+              git -C "$target" read-tree --empty
+            fi
+            for destination in "${destinations[@]}"; do
+              scope="$destination/linux"
+              [[ ! -L "$target/$destination" && ! -L "$target/$scope" ]]
+              git -C "$target" rm -r --ignore-unmatch -- "$scope"
+              mkdir -p "$target/$destination"
+              cp -a "$source_dir" "$target/$scope"
+              git -C "$target" add -- "$scope"
+            done
+            if git -C "$target" diff --cached --quiet && [[ -n "$expected_head" && "$has_history" == false ]]; then
+              echo 'Selected snapshot is already up to date' >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            # A parentless commit retains the entire publication tree without binary history.
+            tree=$(git -C "$target" write-tree)
+            root_commit=$(git -C "$target" commit-tree "$tree" -m "Update $SNAPSHOT Linux libraries")
+            git -C "$target" update-ref HEAD "$root_commit"
+            # Compare against the exact fetched revision so concurrent publishers retry safely.
+            if git -C "$target" push --force-with-lease="refs/heads/maven:$expected_head" origin HEAD:refs/heads/maven; then
+              printf 'Published: %s\n' "${destinations[*]}" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            cleanup
+            sleep "$attempt"
+          done
+          echo 'Publish failed after 10 attempts' >&2
+          exit 1

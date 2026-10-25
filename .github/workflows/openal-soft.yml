@@ -1,0 +1,235 @@
+name: openal-soft Linux Build
+'on':
+  workflow_call:
+    inputs:
+      channel:
+        type: string
+        required: true
+      version:
+        type: string
+        required: false
+        default: ''
+      output_prefix:
+        type: string
+        required: true
+permissions:
+  contents: read
+jobs:
+  linux:
+    name: Linux
+    runs-on: ${{ matrix.RUNNER }}
+    container: debian:trixie
+    strategy:
+      fail-fast: false
+      matrix:
+        ARCH: [amd64, arm64]
+        include:
+        - ARCH: amd64
+          RUNNER: ubuntu-24.04
+          CMAKE_PARAMS: ''
+          GCC: 14
+        - ARCH: arm64
+          RUNNER: ubuntu-24.04-arm
+          CMAKE_PARAMS: ''
+          GCC: 14
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install dependencies
+        run: |
+          rm -f /etc/apt/apt.conf.d/docker-clean
+          DEBIAN_FRONTEND=noninteractive apt-get -yq update
+          DEBIAN_FRONTEND=noninteractive apt-get -yq install --no-install-recommends ca-certificates git tar zstd
+      - uses: actions/checkout@v7
+        with:
+          repository: LWJGL-CI/openal-soft
+          fetch-depth: 3
+      - uses: actions/cache@v5
+        with:
+          path: /var/cache/apt
+          key: apt-trixie-v1-openal-soft-${{ github.job }}-${{ runner.arch }}-${{ matrix.ARCH }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            apt-trixie-v1-openal-soft-${{ github.job }}-${{ runner.arch }}-${{ matrix.ARCH }}-
+      - name: Install build dependencies
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get -yq install build-essential  cmake \
+            gcc-${{ matrix.GCC }} \
+            g++-${{ matrix.GCC }} \
+            libc6-dev
+      - name: Install cross-compilation dependencies
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get -yq install \
+            libpulse-dev \
+            portaudio19-dev \
+            libasound2-dev \
+            libjack-dev \
+            libdbus-1-dev \
+            libpipewire-0.3-dev
+      - name: Configure build
+        run: |
+          CC=gcc-${{ matrix.GCC }} CXX=g++-${{ matrix.GCC }} cmake -B build \
+            -DALSOFT_REQUIRE_RTKIT=ON \
+            -DALSOFT_REQUIRE_ALSA=ON \
+            -DALSOFT_REQUIRE_OSS=ON \
+            -DALSOFT_REQUIRE_PORTAUDIO=ON \
+            -DALSOFT_REQUIRE_PULSEAUDIO=ON \
+            -DALSOFT_REQUIRE_JACK=ON \
+            -DALSOFT_REQUIRE_PIPEWIRE=ON \
+            -DALSOFT_EMBED_HRTF_DATA=YES \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_FLAGS:STRING="${CMAKE_C_FLAGS} -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0" \
+            ${{matrix.CMAKE_PARAMS}}
+      - name: Build
+        run: |
+          git config --global --add safe.directory $(pwd)
+          cmake --build build --parallel
+          strip build/libopenal.so
+      - name: Stage library files
+        run: |
+          output="dist/${{ inputs.output_prefix }}/linux/${{ matrix.ARCH == 'amd64' && 'x64' || matrix.ARCH }}"
+          mkdir -p "$output"
+          cp -p "build/libopenal.so" "$output/libopenal.so"
+          git log --first-parent --pretty=format:%H --skip 1 -n 1 > "$output/libopenal.so.git"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-openal-soft-linux-${{ matrix.ARCH }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  linux-cross:
+    name: Linux Cross
+    runs-on: ubuntu-24.04
+    container: debian:trixie
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - ARCH: ppc64le
+          CROSS_ARCH: ppc64el
+          TRIPLET: powerpc64le-linux-gnu
+          GCC: 14
+          CMAKE_PARAMS: -DPROCESSOR=powerpc64le
+          PROCESSOR: powerpc64le
+          HOST: powerpc64le-linux-gnu
+        - ARCH: riscv64
+          CROSS_ARCH: riscv64
+          TRIPLET: riscv64-linux-gnu
+          GCC: 14
+          CMAKE_PARAMS: -DPROCESSOR=riscv64
+          PROCESSOR: riscv64
+          HOST: riscv64-linux-gnu
+        - ARCH: loong64
+          CROSS_ARCH: loong64
+          TRIPLET: loongarch64-linux-gnu
+          GCC: 14
+          CMAKE_PARAMS: -DPROCESSOR=loongarch64
+          PROCESSOR: loongarch64
+          HOST: loongarch64-linux-gnu
+        - ARCH: s390x
+          CROSS_ARCH: s390x
+          TRIPLET: s390x-linux-gnu
+          GCC: 14
+          CMAKE_PARAMS: -DPROCESSOR=s390x
+          PROCESSOR: s390x
+          HOST: s390x-linux-gnu
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install dependencies
+        run: |
+          rm -f /etc/apt/apt.conf.d/docker-clean
+          DEBIAN_FRONTEND=noninteractive apt-get -yq update
+          DEBIAN_FRONTEND=noninteractive apt-get -yq install --no-install-recommends ca-certificates git tar zstd
+      - uses: actions/checkout@v7
+        with:
+          repository: LWJGL-CI/openal-soft
+          fetch-depth: 3
+      - uses: actions/cache@v5
+        with:
+          path: /var/cache/apt
+          key: apt-trixie-v1-openal-soft-${{ github.job }}-${{ runner.arch }}-${{ matrix.ARCH }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            apt-trixie-v1-openal-soft-${{ github.job }}-${{ runner.arch }}-${{ matrix.ARCH }}-
+      - name: Install build dependencies
+        run: |
+          apt-get -yq install build-essential  cmake \
+            gcc-${{ matrix.GCC }}-${{ matrix.TRIPLET }} \
+            g++-${{ matrix.GCC }}-${{ matrix.TRIPLET }} \
+            libc6-dev-${{ matrix.CROSS_ARCH }}-cross
+      - name: Prepare Debian Repository for loong64
+        if: matrix.ARCH == 'loong64'
+        run: |
+          # Official trixie does not carry loong64. Do not request its index there,
+          # or install native amd64 packages from the supplemental mirror.
+          native=$(dpkg --print-architecture)
+          sed -i "/^Types: deb/a Architectures: $native" /etc/apt/sources.list.d/debian.sources
+          cat > /etc/apt/sources.list.d/trixie-loong64.sources << "EOF"
+          Types: deb
+          URIs: http://mirrors.loong64.com/debian
+          Suites: trixie trixie-updates
+          Components: main
+          Architectures: loong64
+          # Signed-By: /usr/share/keyrings/debian-loong64-non-official-archive-keyring.pgp
+
+          Types: deb
+          URIs: http://mirrors.loong64.com/debian-security
+          Suites: trixie-security
+          Components: main
+          Architectures: loong64
+          # Signed-By: /usr/share/keyrings/debian-loong64-non-official-archive-keyring.pgp
+          EOF
+          dpkg --add-architecture loong64
+          apt-get update -o Acquire::AllowInsecureRepositories=true
+          apt-get install -y --allow-unauthenticated curl debian-loong64-non-official-archive-keyring
+          sed -i 's/# Signed-By/Signed-By/g' /etc/apt/sources.list.d/trixie-loong64.sources
+          apt-get update
+      - name: Prepare cross-compilation for ${{ matrix.CROSS_ARCH }}
+        run: |
+          dpkg --add-architecture ${{ matrix.CROSS_ARCH }}
+          apt-get update
+      - name: Install cross-compilation dependencies
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get -yq install \
+            libpulse-dev:${{ matrix.CROSS_ARCH }} \
+            portaudio19-dev:${{ matrix.CROSS_ARCH }} \
+            libasound2-dev:${{ matrix.CROSS_ARCH }} \
+            libjack-dev:${{ matrix.CROSS_ARCH }} \
+            libdbus-1-dev:${{ matrix.CROSS_ARCH }} \
+            libpipewire-0.3-dev:${{ matrix.CROSS_ARCH }}
+      - name: Configure build
+        #-DCMAKE_TOOLCHAIN_FILE=../XCompile-Linux.txt \
+        run: |
+          export PKG_CONFIG_LIBDIR="/usr/lib/${{ matrix.TRIPLET }}/pkgconfig:/usr/share/pkgconfig"
+          CC=${{ matrix.TRIPLET }}-gcc-${{ matrix.GCC }} CXX=${{ matrix.TRIPLET }}-g++-${{ matrix.GCC }} cmake -B build \
+            -DALSOFT_REQUIRE_RTKIT=ON \
+            -DALSOFT_REQUIRE_ALSA=ON \
+            -DALSOFT_REQUIRE_OSS=ON \
+            -DALSOFT_REQUIRE_PORTAUDIO=ON \
+            -DALSOFT_REQUIRE_PULSEAUDIO=ON \
+            -DALSOFT_REQUIRE_JACK=ON \
+            -DALSOFT_REQUIRE_PIPEWIRE=ON \
+            -DALSOFT_EMBED_HRTF_DATA=YES \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_FLAGS:STRING="${CMAKE_C_FLAGS} -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0" \
+            -DHOST=${{ matrix.TRIPLET }} \
+            ${{matrix.CMAKE_PARAMS}}
+      - name: Build
+        run: |
+          git config --global --add safe.directory $(pwd)
+          cmake --build build --parallel
+          ${{ matrix.TRIPLET }}-strip build/libopenal.so
+      - name: Stage library files
+        run: |
+          output="dist/${{ inputs.output_prefix }}/linux/${{ matrix.ARCH }}"
+          mkdir -p "$output"
+          cp -p "build/libopenal.so" "$output/libopenal.so"
+          git log --first-parent --pretty=format:%H --skip 1 -n 1 > "$output/libopenal.so.git"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-openal-soft-linux-cross-${{ matrix.ARCH }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7

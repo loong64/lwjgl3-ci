@@ -1,0 +1,182 @@
+name: freetype Linux Build
+'on':
+  workflow_call:
+    inputs:
+      channel:
+        type: string
+        required: true
+      version:
+        type: string
+        required: false
+        default: ''
+      output_prefix:
+        type: string
+        required: true
+permissions:
+  contents: read
+env:
+  FREETYPE_PARAMS: --wrap-mode=default --force-fallback-for=harfbuzz,libpng,zlib -Dbrotli=disabled -Dbzip2=disabled -Dharfbuzz=enabled
+    -Dpng=enabled -Dzlib=system -Dtests=disabled -Dbuildtype=release -Dfreetype2:zlib=disabled -Dfreetype2:png=disabled
+    -Dharfbuzz:experimental_api=true -Dharfbuzz:subset=disabled -Dharfbuzz:raster=disabled -Dharfbuzz:vector=disabled
+    -Db_lto=true -Db_ndebug=true -Derror_strings=true
+jobs:
+  linux:
+    name: Linux
+    runs-on: ${{ matrix.RUNNER }}
+    container: debian:trixie
+    strategy:
+      fail-fast: false
+      matrix:
+        ARCH: [amd64, arm64]
+        include:
+        - ARCH: amd64
+          RUNNER: ubuntu-24.04
+          GCC: 14
+        - ARCH: arm64
+          RUNNER: ubuntu-24.04-arm
+          GCC: 14
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install dependencies
+        run: |
+          rm -f /etc/apt/apt.conf.d/docker-clean
+          DEBIAN_FRONTEND=noninteractive apt-get -yq update
+          DEBIAN_FRONTEND=noninteractive apt-get -yq install --no-install-recommends ca-certificates git tar zstd
+      - uses: actions/checkout@v7
+        with:
+          repository: LWJGL-CI/freetype
+          fetch-depth: 3
+      - uses: actions/cache@v5
+        with:
+          path: /var/cache/apt
+          key: apt-trixie-v1-freetype-${{ github.job }}-${{ runner.arch }}-${{ matrix.ARCH }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            apt-trixie-v1-freetype-${{ github.job }}-${{ runner.arch }}-${{ matrix.ARCH }}-
+      - name: Install build dependencies
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get -yq install \
+            gcc-${{ matrix.GCC }} \
+            g++-${{ matrix.GCC }} \
+            libc6-dev
+      - name: Install FreeType dependencies
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get -yq install python3-pip ninja-build
+          pip3 install meson --break-system-packages
+      - name: Configure build
+        run: |
+          meson setup build $FREETYPE_PARAMS
+      - name: Build
+        run: |
+          meson compile --verbose -C build
+          strip build/libfreetype.so
+      - name: Stage library files
+        run: |
+          output="dist/${{ inputs.output_prefix }}/linux/${{ matrix.ARCH == 'amd64' && 'x64' || matrix.ARCH }}"
+          mkdir -p "$output"
+          cp -p "build/libfreetype.so" "$output/libfreetype.so"
+          git config --global --add safe.directory $(pwd)
+          git log --first-parent --pretty=format:%H HEAD~2..HEAD~1 > "$output/libfreetype.so.git"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-freetype-linux-${{ matrix.ARCH }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  linux-cross:
+    name: Linux Cross
+    runs-on: ubuntu-24.04
+    container: debian:trixie
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - ARCH: ppc64le
+          CROSS_ARCH: ppc64el
+          TRIPLET: powerpc64le-linux-gnu
+          GCC: 14
+          PROCESSOR: powerpc64le
+          HOST: powerpc64le-linux-gnu
+        - ARCH: riscv64
+          CROSS_ARCH: riscv64
+          TRIPLET: riscv64-linux-gnu
+          GCC: 14
+          PROCESSOR: riscv64
+          HOST: riscv64-linux-gnu
+        - ARCH: loong64
+          CROSS_ARCH: loong64
+          TRIPLET: loongarch64-linux-gnu
+          GCC: 14
+          PROCESSOR: loongarch64
+          HOST: loongarch64-linux-gnu
+        - ARCH: s390x
+          CROSS_ARCH: s390x
+          TRIPLET: s390x-linux-gnu
+          GCC: 14
+          PROCESSOR: s390x
+          HOST: s390x-linux-gnu
+    defaults:
+      run:
+        shell: bash
+    env:
+      LWJGL_ARCH: ${{ matrix.ARCH }}
+    steps:
+      - name: Install dependencies
+        run: |
+          rm -f /etc/apt/apt.conf.d/docker-clean
+          DEBIAN_FRONTEND=noninteractive apt-get -yq update
+          DEBIAN_FRONTEND=noninteractive apt-get -yq install --no-install-recommends ca-certificates git tar zstd
+      - uses: actions/checkout@v7
+        with:
+          repository: LWJGL-CI/freetype
+          fetch-depth: 3
+      - uses: actions/cache@v5
+        with:
+          path: /var/cache/apt
+          key: apt-trixie-v1-freetype-${{ github.job }}-${{ runner.arch }}-${{ matrix.ARCH }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            apt-trixie-v1-freetype-${{ github.job }}-${{ runner.arch }}-${{ matrix.ARCH }}-
+      - name: Install build dependencies
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get -yq install \
+            gcc-${{ matrix.GCC }}-${{ matrix.TRIPLET }} \
+            g++-${{ matrix.GCC }}-${{ matrix.TRIPLET }} \
+            libc6-dev-${{ matrix.CROSS_ARCH }}-cross
+      - name: Install FreeType dependencies
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get -yq install python3-pip ninja-build
+          pip3 install meson --break-system-packages
+      - name: Prepare build
+        run: |
+          if [ ! -f "lwjgl_linux_${{ matrix.ARCH }}.cross" ]; then
+            cp lwjgl_linux_arm64.cross lwjgl_linux_${{ matrix.ARCH }}.cross
+            sed -i "s/aarch64/${{ matrix.PROCESSOR }}/g" lwjgl_linux_${{ matrix.ARCH }}.cross
+            sed -i "s/arm64/${{ matrix.ARCH }}/g" lwjgl_linux_${{ matrix.ARCH }}.cross
+          fi
+          if [ "${{ matrix.ARCH }}" = "s390x" ]; then
+            sed -i "s/little/big/g" lwjgl_linux_${{ matrix.ARCH }}.cross
+          fi
+          sed -i "s/12/${{ matrix.GCC }}/g" lwjgl_linux_${{ matrix.ARCH }}.cross
+      - name: Configure build
+        run: |
+          export PKG_CONFIG_LIBDIR="/usr/lib/${{ matrix.TRIPLET }}/pkgconfig:/usr/share/pkgconfig"
+          meson setup build $FREETYPE_PARAMS --cross-file lwjgl_linux_${{ matrix.ARCH }}.cross
+      - name: Build
+        run: |
+          meson compile --verbose -C build
+          ${{ matrix.TRIPLET }}-strip build/libfreetype.so
+      - name: Stage library files
+        run: |
+          output="dist/${{ inputs.output_prefix }}/linux/${{ matrix.ARCH }}"
+          mkdir -p "$output"
+          cp -p "build/libfreetype.so" "$output/libfreetype.so"
+          git config --global --add safe.directory $(pwd)
+          git log --first-parent --pretty=format:%H HEAD~2..HEAD~1 > "$output/libfreetype.so.git"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-freetype-linux-cross-${{ matrix.ARCH }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7

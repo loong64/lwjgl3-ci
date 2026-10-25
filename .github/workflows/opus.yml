@@ -1,0 +1,174 @@
+name: opus Linux Build
+'on':
+  workflow_call:
+    inputs:
+      channel:
+        type: string
+        required: true
+      version:
+        type: string
+        required: false
+        default: ''
+      output_prefix:
+        type: string
+        required: true
+permissions:
+  contents: read
+env:
+  OPUS_PARAMS: --disable-extra-programs --disable-doc --disable-hardening --disable-stack-protector --enable-custom-modes
+    --enable-dred --enable-osce
+jobs:
+  linux:
+    name: Linux
+    runs-on: ${{ matrix.RUNNER }}
+    container: debian:trixie
+    strategy:
+      fail-fast: false
+      matrix:
+        ARCH: [amd64, arm64]
+        include:
+        - ARCH: amd64
+          RUNNER: ubuntu-24.04
+          GCC: 14
+        - ARCH: arm64
+          RUNNER: ubuntu-24.04-arm
+          GCC: 14
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install dependencies
+        run: |
+          rm -f /etc/apt/apt.conf.d/docker-clean
+          DEBIAN_FRONTEND=noninteractive apt-get -yq update
+          DEBIAN_FRONTEND=noninteractive apt-get -yq install --no-install-recommends ca-certificates git tar zstd
+      - uses: actions/checkout@v7
+        with:
+          repository: LWJGL-CI/opus
+          fetch-depth: 3
+          submodules: recursive
+      - uses: actions/cache@v5
+        with:
+          path: /var/cache/apt
+          key: apt-trixie-v1-opus-${{ github.job }}-${{ runner.arch }}-${{ matrix.ARCH }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            apt-trixie-v1-opus-${{ github.job }}-${{ runner.arch }}-${{ matrix.ARCH }}-
+      - name: Install build dependencies
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get -yq install autoconf   git-lfs make libtool wget \
+            gcc-${{ matrix.GCC }} \
+            libc6-dev
+      - name: Configure ogg
+        run: |
+          export CC=gcc-${{ matrix.GCC }}
+          cd ogg
+          ./autogen.sh
+          ./configure
+      - name: Configure build
+        run: |
+          export CC=gcc-${{ matrix.GCC }}
+          ./autogen.sh
+          ./configure ${{env.OPUS_PARAMS}}
+      - name: Build
+        run: |
+          make -j8
+          strip .libs/libopus.so
+      - name: Stage library files
+        run: |
+          output="dist/${{ inputs.output_prefix }}/linux/${{ matrix.ARCH == 'amd64' && 'x64' || matrix.ARCH }}"
+          mkdir -p "$output"
+          cp -p ".libs/libopus.so" "$output/libopus.so"
+          git config --global --add safe.directory $(pwd)
+          git log --first-parent --pretty=format:%H --skip 1 -n 1 > "$output/libopus.so.git"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-opus-linux-${{ matrix.ARCH }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+  linux-cross:
+    name: Linux Cross
+    runs-on: ubuntu-24.04
+    container: debian:trixie
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - ARCH: ppc64le
+          CROSS_ARCH: ppc64el
+          TRIPLET: powerpc64le-linux-gnu
+          GCC: 14
+          HOST: powerpc64le-unknown-linux-gnu
+          PROCESSOR: powerpc64le
+        - ARCH: riscv64
+          CROSS_ARCH: riscv64
+          TRIPLET: riscv64-linux-gnu
+          GCC: 14
+          HOST: riscv64-unknown-linux-gnu
+          PROCESSOR: riscv64
+        - ARCH: loong64
+          CROSS_ARCH: loong64
+          TRIPLET: loongarch64-linux-gnu
+          GCC: 14
+          HOST: loongarch64-unknown-linux-gnu
+          PROCESSOR: loongarch64
+        - ARCH: s390x
+          CROSS_ARCH: s390x
+          TRIPLET: s390x-linux-gnu
+          GCC: 14
+          HOST: s390x-unknown-linux-gnu
+          PROCESSOR: s390x
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install dependencies
+        run: |
+          rm -f /etc/apt/apt.conf.d/docker-clean
+          DEBIAN_FRONTEND=noninteractive apt-get -yq update
+          DEBIAN_FRONTEND=noninteractive apt-get -yq install --no-install-recommends ca-certificates git tar zstd
+      - uses: actions/checkout@v7
+        with:
+          repository: LWJGL-CI/opus
+          fetch-depth: 3
+          submodules: recursive
+      - uses: actions/cache@v5
+        with:
+          path: /var/cache/apt
+          key: apt-trixie-v1-opus-${{ github.job }}-${{ runner.arch }}-${{ matrix.ARCH }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            apt-trixie-v1-opus-${{ github.job }}-${{ runner.arch }}-${{ matrix.ARCH }}-
+      - name: Install build dependencies
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get -yq install autoconf   git-lfs make libtool wget \
+            gcc-${{ matrix.GCC }}-${{ matrix.TRIPLET }} \
+            libc6-dev-${{ matrix.CROSS_ARCH }}-cross
+      - name: Configure ogg
+        run: |
+          export CC=${{ matrix.TRIPLET }}-gcc-${{ matrix.GCC }}
+          cd ogg
+          ./autogen.sh
+          ./configure --host=${{ matrix.HOST }}
+      - name: Configure build
+        run: |
+          export CC=${{ matrix.TRIPLET }}-gcc-${{ matrix.GCC }}
+          export PKG_CONFIG_LIBDIR="/usr/lib/${{ matrix.TRIPLET }}/pkgconfig:/usr/share/pkgconfig"
+          ./autogen.sh
+          ./configure ${{env.OPUS_PARAMS}} --host=${{ matrix.HOST }}
+      - name: Build
+        run: |
+          make -j8
+          ${{ matrix.TRIPLET }}-strip .libs/libopus.so
+      - name: Stage library files
+        run: |
+          output="dist/${{ inputs.output_prefix }}/linux/${{ matrix.ARCH }}"
+          mkdir -p "$output"
+          cp -p ".libs/libopus.so" "$output/libopus.so"
+          git config --global --add safe.directory $(pwd)
+          git log --first-parent --pretty=format:%H --skip 1 -n 1 > "$output/libopus.so.git"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-opus-linux-cross-${{ matrix.ARCH }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7

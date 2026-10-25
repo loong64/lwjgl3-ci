@@ -1,0 +1,255 @@
+name: SDL Linux Build
+'on':
+  workflow_call:
+    inputs:
+      channel:
+        type: string
+        required: true
+      version:
+        type: string
+        required: false
+        default: ''
+      output_prefix:
+        type: string
+        required: true
+permissions:
+  contents: read
+env:
+  SDL_PARAMS: -DSDL_TEST_LIBRARY=OFF -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DDSDL_INSTALL=OFF -DCMAKE_BUILD_TYPE=Release
+jobs:
+  linux:
+    name: Linux
+    runs-on: ${{ matrix.RUNNER }}
+    container: debian:trixie
+    strategy:
+      fail-fast: false
+      matrix:
+        ARCH: [amd64, arm64]
+        include:
+        - ARCH: amd64
+          RUNNER: ubuntu-24.04
+          GCC: 14
+        - ARCH: arm64
+          RUNNER: ubuntu-24.04-arm
+          GCC: 14
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install dependencies
+        run: |
+          rm -f /etc/apt/apt.conf.d/docker-clean
+          DEBIAN_FRONTEND=noninteractive apt-get -yq update
+          DEBIAN_FRONTEND=noninteractive apt-get -yq install --no-install-recommends ca-certificates git tar zstd
+      - uses: actions/checkout@v7
+        with:
+          repository: LWJGL-CI/SDL
+          fetch-depth: 3
+      - name: Cache apt packages
+        uses: actions/cache@v5
+        with:
+          path: /var/cache/apt
+          key: apt-trixie-v1-SDL-${{ github.job }}-${{ runner.arch }}-${{ matrix.ARCH }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            apt-trixie-v1-SDL-${{ github.job }}-${{ runner.arch }}-${{ matrix.ARCH }}-
+      - name: Install build dependencies
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get -yq install cmake \
+            gcc-${{ matrix.GCC }} \
+            libc6-dev
+      - name: Install dependencies
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get -yq install \
+            libasound2-dev \
+            libpulse-dev \
+            libaudio-dev \
+            libfribidi-dev \
+            libjack-dev \
+            libsndio-dev \
+            libusb-1.0-0-dev \
+            libx11-dev \
+            libxext-dev \
+            libxrandr-dev \
+            libxcursor-dev \
+            libxfixes-dev \
+            libxi-dev \
+            libxss-dev \
+            libxtst-dev \
+            libxkbcommon-dev \
+            libdrm-dev \
+            libgbm-dev \
+            libgl1-mesa-dev \
+            libgles2-mesa-dev \
+            libegl1-mesa-dev \
+            libdbus-1-dev \
+            libibus-1.0-dev \
+            libudev-dev \
+            libthai-dev \
+            libpipewire-0.3-dev \
+            libwayland-dev \
+            libdecor-0-dev
+      - name: Configure build
+        run: |
+          CC=gcc-${{ matrix.GCC }} cmake -B build \
+            -DCMAKE_C_FLAGS="-std=c99 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0" \
+            $SDL_PARAMS
+      - name: Build
+        run: |
+          cmake --build build --parallel
+          strip build/libSDL3.so
+      - name: Stage library files
+        run: |
+          output="dist/${{ inputs.output_prefix }}/linux/${{ matrix.ARCH == 'amd64' && 'x64' || matrix.ARCH }}"
+          mkdir -p "$output"
+          cp -p "build/libSDL3.so" "$output/libSDL3.so"
+          git config --global --add safe.directory $(pwd)
+          git log --first-parent --pretty=format:%H --skip 1 -n 1 > "$output/libSDL3.so.git"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-SDL-linux-${{ matrix.ARCH }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  linux-cross:
+    name: Linux Cross
+    runs-on: ubuntu-24.04
+    container: debian:trixie
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - ARCH: ppc64le
+          CROSS_ARCH: ppc64el
+          TRIPLET: powerpc64le-linux-gnu
+          GCC: 14
+          PROCESSOR: powerpc64le
+          HOST: powerpc64le-linux-gnu
+        - ARCH: riscv64
+          CROSS_ARCH: riscv64
+          TRIPLET: riscv64-linux-gnu
+          GCC: 14
+          PROCESSOR: riscv64
+          HOST: riscv64-linux-gnu
+        - ARCH: loong64
+          CROSS_ARCH: loong64
+          TRIPLET: loongarch64-linux-gnu
+          GCC: 14
+          PROCESSOR: loongarch64
+          HOST: loongarch64-linux-gnu
+        - ARCH: s390x
+          CROSS_ARCH: s390x
+          TRIPLET: s390x-linux-gnu
+          GCC: 14
+          PROCESSOR: s390x
+          HOST: s390x-linux-gnu
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install dependencies
+        run: |
+          rm -f /etc/apt/apt.conf.d/docker-clean
+          DEBIAN_FRONTEND=noninteractive apt-get -yq update
+          DEBIAN_FRONTEND=noninteractive apt-get -yq install --no-install-recommends ca-certificates git tar zstd
+      - uses: actions/checkout@v7
+        with:
+          repository: LWJGL-CI/SDL
+          fetch-depth: 3
+      - name: Cache apt packages
+        uses: actions/cache@v5
+        with:
+          path: /var/cache/apt
+          key: apt-trixie-v1-SDL-${{ github.job }}-${{ runner.arch }}-${{ matrix.ARCH }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            apt-trixie-v1-SDL-${{ github.job }}-${{ runner.arch }}-${{ matrix.ARCH }}-
+      - name: Install build dependencies
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get -yq install cmake \
+            gcc-${{ matrix.GCC }}-${{ matrix.TRIPLET }} \
+            libc6-dev-${{ matrix.CROSS_ARCH }}-cross
+      - name: Prepare Debian Repository for loong64
+        if: matrix.ARCH == 'loong64'
+        run: |
+          # Official trixie does not carry loong64. Do not request its index there,
+          # or install native amd64 packages from the supplemental mirror.
+          native=$(dpkg --print-architecture)
+          sed -i "/^Types: deb/a Architectures: $native" /etc/apt/sources.list.d/debian.sources
+          cat > /etc/apt/sources.list.d/trixie-loong64.sources << "EOF"
+          Types: deb
+          URIs: http://mirrors.loong64.com/debian
+          Suites: trixie trixie-updates
+          Components: main
+          Architectures: loong64
+          # Signed-By: /usr/share/keyrings/debian-loong64-non-official-archive-keyring.pgp
+
+          Types: deb
+          URIs: http://mirrors.loong64.com/debian-security
+          Suites: trixie-security
+          Components: main
+          Architectures: loong64
+          # Signed-By: /usr/share/keyrings/debian-loong64-non-official-archive-keyring.pgp
+          EOF
+          dpkg --add-architecture loong64
+          apt-get update -o Acquire::AllowInsecureRepositories=true
+          apt-get install -y --allow-unauthenticated curl debian-loong64-non-official-archive-keyring
+          sed -i 's/# Signed-By/Signed-By/g' /etc/apt/sources.list.d/trixie-loong64.sources
+          apt-get update
+      - name: Prepare cross-compilation for ${{ matrix.CROSS_ARCH }}
+        run: |
+          dpkg --add-architecture ${{ matrix.CROSS_ARCH }}
+          apt-get update
+      - name: Install dependencies
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get -yq install \
+            libasound2-dev:${{ matrix.CROSS_ARCH }} \
+            libpulse-dev:${{ matrix.CROSS_ARCH }} \
+            libaudio-dev:${{ matrix.CROSS_ARCH }} \
+            libfribidi-dev:${{ matrix.CROSS_ARCH }} \
+            libjack-dev:${{ matrix.CROSS_ARCH }} \
+            libsndio-dev:${{ matrix.CROSS_ARCH }} \
+            libusb-1.0-0-dev:${{ matrix.CROSS_ARCH }} \
+            libx11-dev:${{ matrix.CROSS_ARCH }} \
+            libxext-dev:${{ matrix.CROSS_ARCH }} \
+            libxrandr-dev:${{ matrix.CROSS_ARCH }} \
+            libxcursor-dev:${{ matrix.CROSS_ARCH }} \
+            libxfixes-dev:${{ matrix.CROSS_ARCH }} \
+            libxi-dev:${{ matrix.CROSS_ARCH }} \
+            libxss-dev:${{ matrix.CROSS_ARCH }} \
+            libxtst-dev:${{ matrix.CROSS_ARCH }} \
+            libxkbcommon-dev:${{ matrix.CROSS_ARCH }} \
+            libdrm-dev:${{ matrix.CROSS_ARCH }} \
+            libgbm-dev:${{ matrix.CROSS_ARCH }} \
+            libgl1-mesa-dev:${{ matrix.CROSS_ARCH }} \
+            libgles2-mesa-dev:${{ matrix.CROSS_ARCH }} \
+            libegl1-mesa-dev:${{ matrix.CROSS_ARCH }} \
+            libdbus-1-dev:${{ matrix.CROSS_ARCH }} \
+            libibus-1.0-dev:${{ matrix.CROSS_ARCH }} \
+            libudev-dev:${{ matrix.CROSS_ARCH }} \
+            libthai-dev:${{ matrix.CROSS_ARCH }} \
+            libpipewire-0.3-dev:${{ matrix.CROSS_ARCH }} \
+            libwayland-dev:${{ matrix.CROSS_ARCH }} \
+            libdecor-0-dev:${{ matrix.CROSS_ARCH }}
+      - name: Configure build
+        run: |
+          export PKG_CONFIG_LIBDIR="/usr/lib/${{ matrix.TRIPLET }}/pkgconfig:/usr/share/pkgconfig"
+          CC=${{ matrix.TRIPLET }}-gcc-${{ matrix.GCC }} cmake -B build \
+            -DCMAKE_C_FLAGS="-std=c99 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0" \
+            $SDL_PARAMS
+      - name: Build
+        run: |
+          cmake --build build --parallel
+          ${{ matrix.TRIPLET }}-strip build/libSDL3.so
+      - name: Stage library files
+        run: |
+          output="dist/${{ inputs.output_prefix }}/linux/${{ matrix.ARCH }}"
+          mkdir -p "$output"
+          cp -p "build/libSDL3.so" "$output/libSDL3.so"
+          git config --global --add safe.directory $(pwd)
+          git log --first-parent --pretty=format:%H --skip 1 -n 1 > "$output/libSDL3.so.git"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-SDL-linux-cross-${{ matrix.ARCH }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
