@@ -46,7 +46,7 @@ jobs:
           repository: LWJGL-CI/SDL
           fetch-depth: 3
       - name: Cache apt packages
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: /var/cache/apt
           key: apt-trixie-v1-SDL-${{ github.job }}-${{ runner.arch }}-${{ matrix.ARCH }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -157,7 +157,7 @@ jobs:
           repository: LWJGL-CI/SDL
           fetch-depth: 3
       - name: Cache apt packages
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: /var/cache/apt
           key: apt-trixie-v1-SDL-${{ github.job }}-${{ runner.arch }}-${{ matrix.ARCH }}-${{ github.run_id }}-${{ github.run_attempt }}

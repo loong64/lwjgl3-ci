@@ -44,7 +44,7 @@ jobs:
           rm -f /etc/apt/apt.conf.d/docker-clean
           DEBIAN_FRONTEND=noninteractive apt-get -yq update
           DEBIAN_FRONTEND=noninteractive apt-get -yq install --no-install-recommends ca-certificates git tar zstd
-      - uses: actions/cache@v5
+      - uses: actions/cache@v6
         with:
           path: /var/cache/apt
           key: apt-trixie-v1-libffi-${{ github.job }}-${{ runner.arch }}-${{ matrix.ARCH }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -129,7 +129,7 @@ jobs:
           rm -f /etc/apt/apt.conf.d/docker-clean
           DEBIAN_FRONTEND=noninteractive apt-get -yq update
           DEBIAN_FRONTEND=noninteractive apt-get -yq install --no-install-recommends ca-certificates git tar zstd
-      - uses: actions/cache@v5
+      - uses: actions/cache@v6
         with:
           path: /var/cache/apt
           key: apt-trixie-v1-libffi-${{ github.job }}-${{ runner.arch }}-${{ matrix.ARCH }}-${{ github.run_id }}-${{ github.run_attempt }}
